@@ -3,12 +3,13 @@ import { NextApiRequest, NextApiResponse} from "next";
 import { Readable } from "stream";
 import Stripe from "stripe";
 import { stripe } from "../../service/stripe";
+import { saveSubscription } from "./_lib/manageSubscription";
 
 async function buffer(readable: Readable) {
     const chunks = [];
 
     for await (const chunk of readable) {
-        chunk.push(
+        chunks.push(
             typeof chunk === "string" ? Buffer.from(chunk) : chunk
         );
     }
@@ -22,7 +23,9 @@ export const config = {
 }
 
 const relevanEvents = new Set([
-    "checkout.session.completed"
+    "checkout.session.completed",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
 ]);
 
 export default async (request: NextApiRequest, response: NextApiResponse) => {
@@ -41,7 +44,32 @@ export default async (request: NextApiRequest, response: NextApiResponse) => {
         const type = event.type
 
         if(relevanEvents.has(type)) {
+            try {
+                switch (type) {
+                    case "customer.subscription.updated":
+                    case "customer.subscription.deleted":
 
+                        const subscription = event.data.object as Stripe.Subscription;
+                        await saveSubscription(
+                            subscription.id,
+                            subscription.customer.toString(),
+                            false
+                        )
+                        break;
+                    case "checkout.session.completed":
+                        const checkoutSession = event.data.object as Stripe.Checkout.Session;
+                        await saveSubscription(
+                            checkoutSession.subscription.toString(), 
+                            checkoutSession.customer.toString(),
+                            true
+                        );
+                        break;
+                    default:
+                        throw new Error("Unhandled event.")
+                }
+            } catch (error) {
+                response.json({ error: "Webhook handler failed."});
+            }
         }
         
         response.status(200).json({ received: true });
